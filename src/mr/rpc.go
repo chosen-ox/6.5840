@@ -6,24 +6,38 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
+type ReduceArgs struct {
 	X int
 }
 
-type ExampleReply struct {
+type ReduceReply struct {
 	Y int
+	TASK_NUM int
+	N_MAP int
+}
+
+type MapArgs struct {
+	X int
+}
+
+type MapReply struct {
+	Y        int
+	MAP_TASK string
+	TASK_NUM int
+	N_REDUCE int
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

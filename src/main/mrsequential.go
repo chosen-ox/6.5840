@@ -11,7 +11,7 @@ import "6.5840/mr"
 import "plugin"
 import "os"
 import "log"
-import "io/ioutil"
+import "io"
 import "sort"
 
 // for sorting by key.
@@ -41,7 +41,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
 		}
-		content, err := ioutil.ReadAll(file)
+		content, err := io.ReadAll(file)
 		if err != nil {
 			log.Fatalf("cannot read %v", filename)
 		}

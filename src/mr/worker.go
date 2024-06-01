@@ -41,11 +41,12 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	for {
+	for !CallCoordinatorForTaskFinished(0) {
+	// for {
 		nReduce, tasknum, filename := CallCoordinatorForMapTask()
 		if filename == "" {
 			fmt.Println("No task available")
-			break
+			continue
 		}
 		intermediate := []KeyValue{}
 
@@ -81,10 +82,14 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			ofile.Close()
 		}
+
+		CallCoordinatorForUpateTask(tasknum, 0)
 		time.Sleep(time.Second)
 	}
-	time.Sleep(5*time.Second)
-	// CallCoordinatorForReduceTask()
+
+	// time.Sleep(10*time.Second)
+	
+	
 	for {
 		nMap, tasknum := CallCoordinatorForReduceTask()
 		if tasknum == -1 {
@@ -139,6 +144,33 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
+func CallCoordinatorForUpateTask(tasknum int, typ int) bool {
+	args := TaskFinishedArgs{}
+	reply := TaskFinishedReply{}
+	args.TYPE = typ
+	args.TASK_NUM = tasknum
+
+	ok := call("Coordinator.UpdateTask", &args, &reply)
+	if ok {
+		return reply.Finished
+	} else {
+		fmt.Printf("call failed!\n")
+		return false
+	}
+}
+func CallCoordinatorForTaskFinished(typ int) bool {
+	args := TaskFinishedArgs{}
+	reply := TaskFinishedReply{}
+	args.TYPE = typ
+
+	ok := call("Coordinator.IsTaskFinished", &args, &reply)
+	if ok {
+		return reply.Finished
+	} else {
+		fmt.Printf("call failed!\n")
+		return false
+	}
+}
 
 func CallCoordinatorForReduceTask() (int, int) {
 	

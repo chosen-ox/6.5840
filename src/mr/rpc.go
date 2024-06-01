@@ -15,6 +15,14 @@ import (
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
+type TaskFinishedArgs struct {
+	TYPE int
+	TASK_NUM int
+}
+
+type TaskFinishedReply struct {
+	Finished bool
+}
 
 type ReduceArgs struct {
 	X int

@@ -14,7 +14,44 @@ type Coordinator struct {
 	nReduce         int      // number of reduce tasks
 	map_tasks       []string // list of map tasks
 	is_map_assigned []bool   // if map task is assigned
-	is_reduce_assigned  []bool   // if reduce task is done
+	is_map_done	 []bool   // if map task is done
+	is_reduce_assigned  []bool   // if reduce task is assigned
+	is_reduce_done  []bool   // if reduce task is done
+}
+
+func (c *Coordinator) UpdateTask(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
+	if args.TYPE == 0 {
+		c.is_map_done[args.TASK_NUM] = true
+	} else {
+		c.is_reduce_done[args.TASK_NUM] = true
+	}
+	// TODO: to pass the compiler
+	reply.Finished = true
+	return nil
+}
+
+
+
+func (c *Coordinator) IsTaskFinished(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
+	if args.TYPE == 0 {
+		for i := 0; i < len(c.is_map_done); i++ {
+			if !c.is_map_done[i] {
+				reply.Finished = false
+				return nil
+			}
+		}
+		reply.Finished = true
+		return nil
+	} else {
+		for i := 0; i < len(c.is_reduce_done); i++ {
+			if !c.is_reduce_done[i] {
+				reply.Finished = false
+				return nil
+			}
+		}
+		reply.Finished = true
+		return nil
+	}
 
 }
 
@@ -76,7 +113,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	ret := false
-	time.Sleep(20 * time.Second)
+	time.Sleep(10* time.Second)
 	// Your code here.
 
 	return ret
@@ -93,9 +130,19 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// set all element in if_map_assigned to false
 	c.is_map_assigned = make([]bool, len(files))
+	c.is_map_done = make([]bool, len(files))
+
 	c.is_reduce_assigned = make([]bool, nReduce)
+	c.is_reduce_done = make([]bool, nReduce)
+
 	for i := 0; i < len(files); i++ {
 		c.is_map_assigned[i] = false
+		c.is_map_done[i] = false
+	}
+
+	for i := 0; i < nReduce; i++ {
+		c.is_reduce_assigned[i] = false
+		c.is_reduce_done[i] = false
 	}
 
 	// Your code here.

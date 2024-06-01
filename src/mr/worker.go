@@ -38,14 +38,12 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
 
-	// uncomment to send the Example RPC to the coordinator.
 	for !CallCoordinatorForTaskFinished(0) {
 	// for {
 		nReduce, tasknum, filename := CallCoordinatorForMapTask()
 		if filename == "" {
-			fmt.Println("No task available")
+			time.Sleep(time.Second)
 			continue
 		}
 		intermediate := []KeyValue{}
@@ -64,16 +62,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		onames := make([]string, nReduce)
 		for i := 0; i < nReduce; i++ {
-			onames[i] = fmt.Sprintf("mr-%d-%d", tasknum, i)
-			fmt.Println(onames[i])
+			tempfile, _ := os.CreateTemp("./", fmt.Sprintf("mr-%d-%d", tasknum, i) + "-*")
+			onames[i] = tempfile.Name()
 		}
 
 		for _, kv := range intermediate {
 			oname := onames[ihash(kv.Key)%nReduce]
-			ofile, err := os.OpenFile(oname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				log.Fatalf("cannot open %v", oname)
-			}
+
+			ofile, _ := os.OpenFile(oname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+
 			enc := json.NewEncoder(ofile)
 			err = enc.Encode(&kv)
 			if err != nil {
@@ -83,25 +80,28 @@ func Worker(mapf func(string, string) []KeyValue,
 			ofile.Close()
 		}
 
+		for i := 0; i < nReduce; i++ {
+			os.Rename(onames[i], fmt.Sprintf("mr-%d-%d", tasknum, i))
+		}
 		CallCoordinatorForUpateTask(tasknum, 0)
 		time.Sleep(time.Second)
 	}
 
-	// time.Sleep(10*time.Second)
 	
 	
-	for {
+	for !CallCoordinatorForTaskFinished(1) {
 		nMap, tasknum := CallCoordinatorForReduceTask()
 		if tasknum == -1 {
-			fmt.Println("No task available")
-			break
+			time.Sleep(time.Second)
+			continue
 		}
 		intermediate := []KeyValue{}
 		for i := 0; i < nMap; i++ {
 			filename := fmt.Sprintf("mr-%d-%d", i, tasknum)
 			file, err := os.Open(filename)
 			if err != nil {
-				log.Fatalf("cannot open %v", filename)
+				// log.Fatalf("cannot open %v", filename)
+				continue
 			}
 			dec := json.NewDecoder(file)
 			for {
@@ -138,6 +138,7 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		ofile.Close()
 		time.Sleep(time.Second)
+		CallCoordinatorForUpateTask(tasknum, 1)
 
 
 	}
@@ -177,20 +178,11 @@ func CallCoordinatorForReduceTask() (int, int) {
 	// declare an argument structure.
 	args := ReduceArgs{}
 
-	// fill in the argument(s).
-	args.X = 1
-
 	// declare a reply structure.
 	reply := ReduceReply{}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.GetTask" tells the
-	// receiving server that we'd like to call
-	// the GetTask() method of struct Coordinator.
 	ok := call("Coordinator.GetReduceTask", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.REDUCE_TASK %v\n", reply.TASK_NUM)
 
 		return reply.N_MAP, reply.TASK_NUM
 
@@ -210,20 +202,12 @@ func CallCoordinatorForMapTask() (int, int, string) {
 	// declare an argument structure.
 	args := MapArgs{}
 
-	// fill in the argument(s).
-	args.X = 0
-
 	// declare a reply structure.
 	reply := MapReply{}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.GetTask" tells the
-	// receiving server that we'd like to call
-	// the GetTask() method of struct Coordinator.
+
 	ok := call("Coordinator.GetMapTask", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.MAP_TASK %v\n", reply.MAP_TASK)
 
 		return reply.N_REDUCE, reply.TASK_NUM, reply.MAP_TASK
 
@@ -238,7 +222,6 @@ func CallCoordinatorForMapTask() (int, int, string) {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {

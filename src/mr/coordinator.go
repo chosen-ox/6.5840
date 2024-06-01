@@ -1,32 +1,35 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"time"
+	"sync/atomic"
+	// "time"
 )
 
 type Coordinator struct {
-	// Your definitions here.
 	nReduce         int      // number of reduce tasks
 	map_tasks       []string // list of map tasks
-	is_map_assigned []bool   // if map task is assigned
-	is_map_done	 []bool   // if map task is done
-	is_reduce_assigned  []bool   // if reduce task is assigned
-	is_reduce_done  []bool   // if reduce task is done
+	is_map_assigned []atomic.Bool   // if map task is assigned
+	is_map_done	 []atomic.Bool   // if map task is done
+	is_reduce_assigned  []atomic.Bool   // if reduce task is assigned
+	is_reduce_done  []atomic.Bool  // if reduce task is done
+	map_tasks_timeouts []int
+	reduce_tasks_timeouts []int
+
+	
 }
 
 func (c *Coordinator) UpdateTask(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
 	if args.TYPE == 0 {
-		c.is_map_done[args.TASK_NUM] = true
+		c.is_map_done[args.TASK_NUM].Store(true) 
 	} else {
-		c.is_reduce_done[args.TASK_NUM] = true
+		c.is_reduce_done[args.TASK_NUM].Store(true)
 	}
-	// TODO: to pass the compiler
-	reply.Finished = true
 	return nil
 }
 
@@ -35,7 +38,7 @@ func (c *Coordinator) UpdateTask(args *TaskFinishedArgs, reply *TaskFinishedRepl
 func (c *Coordinator) IsTaskFinished(args *TaskFinishedArgs, reply *TaskFinishedReply) error {
 	if args.TYPE == 0 {
 		for i := 0; i < len(c.is_map_done); i++ {
-			if !c.is_map_done[i] {
+			if !c.is_map_done[i].Load() {
 				reply.Finished = false
 				return nil
 			}
@@ -44,7 +47,7 @@ func (c *Coordinator) IsTaskFinished(args *TaskFinishedArgs, reply *TaskFinished
 		return nil
 	} else {
 		for i := 0; i < len(c.is_reduce_done); i++ {
-			if !c.is_reduce_done[i] {
+			if !c.is_reduce_done[i].Load() {
 				reply.Finished = false
 				return nil
 			}
@@ -63,9 +66,8 @@ func (c *Coordinator) GetNReduce(args *MapArgs, reply *MapReply) error {
 func (c *Coordinator) GetReduceTask(args *ReduceArgs, reply *ReduceReply) error {
 	reply.N_MAP = len(c.map_tasks)
 	for i := 0; i < len(c.is_reduce_assigned); i++ {
-		if !c.is_reduce_assigned[i] {
+		if c.is_reduce_assigned[i].CompareAndSwap(false, true) {
 			reply.TASK_NUM = i
-			c.is_reduce_assigned[i] = true
 			return nil
 		}
 	}
@@ -75,23 +77,20 @@ func (c *Coordinator) GetReduceTask(args *ReduceArgs, reply *ReduceReply) error 
 
 // Your code here -- RPC handlers for the worker to call.
 
-// an example RPC handler.
 //
 // the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) GetMapTask(args *MapArgs, reply *MapReply) error {
 	reply.N_REDUCE = c.nReduce
 
 	for i := 0; i < len(c.map_tasks); i++ {
-		if !c.is_map_assigned[i] {
+		if c.is_map_assigned[i].CompareAndSwap(false, true) {
 			reply.MAP_TASK = c.map_tasks[i]
 			reply.TASK_NUM = i
-			c.is_map_assigned[i] = true
 			return nil
 		}
 	}
 	reply.MAP_TASK = ""
 
-	reply.Y = args.X + 1
 	return nil
 }
 
@@ -112,11 +111,54 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-	time.Sleep(10* time.Second)
-	// Your code here.
+	map_done := true
+	for i := 0; i < len(c.is_map_done); i++ {
+		if !c.is_map_done[i].Load() {
+			map_done = false
+			break
+		}
+	}
 
-	return ret
+	if !map_done {
+		for i := 0; i < len(c.map_tasks_timeouts); i++ {
+			if !c.is_map_done[i].Load() && c.is_map_assigned[i].Load() {
+				if c.map_tasks_timeouts[i] > 10 {
+					c.is_map_assigned[i].Store(false)
+					c.map_tasks_timeouts[i] = 0
+				} else {
+					c.map_tasks_timeouts[i]++
+				}
+			}
+		}
+		return false
+	} 
+
+	reduce_done := true
+
+	for i := 0; i < len(c.is_reduce_done); i++ {
+		if !c.is_reduce_done[i].Load() {
+			reduce_done = false
+			break
+		}
+	}
+
+	if !reduce_done {
+		for i := 0; i < len(c.reduce_tasks_timeouts); i++ {
+			if !c.is_reduce_done[i].Load() && c.is_reduce_assigned[i].Load(){
+				if c.reduce_tasks_timeouts[i] > 10 {
+					c.is_reduce_assigned[i].Store(false)
+					c.reduce_tasks_timeouts[i] = 0
+				} else {
+					c.reduce_tasks_timeouts[i]++
+				}
+			}
+		}
+		return false
+	}
+		
+
+	
+	return true
 }
 
 // create a Coordinator.
@@ -128,24 +170,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.map_tasks = files
 	c.nReduce = nReduce
 
-	// set all element in if_map_assigned to false
-	c.is_map_assigned = make([]bool, len(files))
-	c.is_map_done = make([]bool, len(files))
+	c.is_map_assigned = make([]atomic.Bool, len(files))
+	c.is_map_done = make([]atomic.Bool, len(files))
+	c.map_tasks_timeouts = make([]int, len(files))
 
-	c.is_reduce_assigned = make([]bool, nReduce)
-	c.is_reduce_done = make([]bool, nReduce)
+	c.is_reduce_assigned = make([]atomic.Bool, nReduce)
+	c.is_reduce_done = make([]atomic.Bool, nReduce)
+	c.reduce_tasks_timeouts = make([]int, nReduce)
 
-	for i := 0; i < len(files); i++ {
-		c.is_map_assigned[i] = false
-		c.is_map_done[i] = false
-	}
-
-	for i := 0; i < nReduce; i++ {
-		c.is_reduce_assigned[i] = false
-		c.is_reduce_done[i] = false
-	}
-
-	// Your code here.
 
 	c.server()
 	return &c

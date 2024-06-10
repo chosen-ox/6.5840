@@ -19,20 +19,18 @@ package raft
 
 import (
 	"bytes"
+	// "fmt"
 	"log"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"sort"
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
 )
-
-
-
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -178,13 +176,21 @@ func (rf *Raft) updateStateMachine() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.commitIndex > rf.lastApplied {
+		// fmt.Println("Server ", rf.me, " is updating state machine from ", rf.lastApplied, " to ", rf.commitIndex)
+		// fmt.Println(rf.log)
+		// fmt.Println(rf.isLeader)
+
+		tmp_log := make([]LogEntry, len(rf.log))
+		copy(tmp_log, rf.log)
 		rf.log = rf.log[:rf.commitIndex+1]
-		
 		rf.persist()
-		for i := rf.lastApplied; i > rf.commitIndex; i-- {
-			msg := ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i}
+		copy(rf.log, tmp_log)
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			// // fmt.Print("Server ", rf.me, " is applying command ", rf.log[i].Command, " at index ", i, "\n")
+			msg := ApplyMsg{CommandValid: true, Command: rf.log[i].Command, CommandIndex: i+1}
 			rf.applyCh <- msg
 		}
+	
 		
 		rf.lastApplied = rf.commitIndex
 	}
@@ -194,47 +200,50 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	DPrintf("Term: %d, Server %d received AppendEntries from %d\n", args.Term, rf.me, args.LeaderId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.timeOut = false
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
 	} else
 	{
+
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.isLeader = false
-		rf.persist()
 
 
 
 		if args.PrevLogIndex == -1 {
 			reply.Success = true
+			rf.timeOut = false
+
 			if args.Entries == nil {
+				// fmt.Println("Server ", rf.me, "commitindex" , len(rf.log)-1, "leadercommit", args.LeaderCommit, "min", int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1))))
+				if args.LeaderCommit > rf.commitIndex {
+					rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+					go rf.updateStateMachine()
+				}
 				return
 			}
 			rf.log = args.Entries
-			if args.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
-				go rf.updateStateMachine()
-			}
+
+
 			return
 		}
 		if args.PrevLogIndex >= len(rf.log) || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 			reply.Success = false
 			return
 		}
+		rf.timeOut = false
 
 		reply.Success = true
 		if args.Entries == nil {
+			
 			return
 		}
 		rf.log = rf.log[:args.PrevLogIndex+1]
 		rf.log = append(rf.log, args.Entries...)
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
-			go rf.updateStateMachine()
-		}
+
 	}
 }
 
@@ -249,13 +258,14 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			rf.currentTerm = reply.Term
 			rf.votedFor = -1
 			rf.isLeader = false
-			rf.persist()
+
 			return ok
 		}
 		if reply.Success {
 			if args.Entries == nil {
 				return ok
 			}
+			DPrintf("Term: %d, Server %d received AppendEntries from %d\n", rf.currentTerm, rf.me, server)
 			rf.nextIndex[server] = len(args.Entries) + args.PrevLogIndex + 1
 			rf.matchIndex[server] = rf.nextIndex[server] - 1
 		} else {
@@ -307,14 +317,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		rf.isLeader = false
 		rf.timeOut = false
-		rf.persist()
 
-		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 	} else {
-		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 	}
+	reply.Term = rf.currentTerm
 	
 }
 
@@ -367,7 +375,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				}
 				rf.matchIndex = make([]int, len(rf.peers))
 				for i := 0; i < len(rf.peers); i++ {
-					rf.matchIndex[i] = 0
+					rf.matchIndex[i] = -1
 				}
 			}
 		}
@@ -386,6 +394,7 @@ func (rf *Raft) updateCommitIndex() {
 	
 	kv := make(map[int]int)
 
+
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			kv[rf.matchIndex[i]]++
@@ -400,10 +409,12 @@ func (rf *Raft) updateCommitIndex() {
 	presum := 0
 	for _, k := range keys {
 		presum += kv[k]
-
+		DPrintf("Server %d has %d matchIndex %d\n", rf.me, kv[k], k)
+		// fmt.Println("Server", rf.me, "has", kv[k], "matchIndex", k)
 		if k > rf.commitIndex && presum>= int(math.Floor(float64(len(rf.peers))/2)) {
+			DPrintf("Server %d is updating commitIndex to %d\n", rf.me, k)
 			rf.commitIndex = k
-			go rf.updateStateMachine()
+			
 			break
 		}
 	}
@@ -427,11 +438,10 @@ func (rf *Raft) updateCommitIndex() {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.isLeader {
-		rf.mu.Lock()
 		rf.log = append(rf.log, LogEntry{rf.currentTerm, command, len(rf.log)})
-		rf.persist()
-		rf.mu.Unlock()
 		return len(rf.log), rf.currentTerm, true
 	} 
 	return -1, -1, false
@@ -486,7 +496,7 @@ func (rf *Raft) leadElection() {
 		// pause for a random amount of time between 200 and 500
 		// milliseconds.
 
-		ms := 700 + (rand.Int63() % 600)
+		ms := 500 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -495,24 +505,27 @@ func (rf *Raft) heartBeat() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		if rf.isLeader {
-			DPrintf("Server %d is sending heartbeats\n", rf.me)
-
+			
 			go rf.updateCommitIndex()
+			go rf.updateStateMachine()
+
 			
 			for i := 0; i < len(rf.peers); i++ {
 				if i != rf.me {
-					if len(rf.log) >= rf.nextIndex[i] {
+					if len(rf.log) - 1 >= rf.nextIndex[i] {
+						DPrintf("Server %d is sending AppendEntries to %d\n", rf.me, i)
 						if rf.nextIndex[i] == 0 {
 							go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, rf.log, rf.commitIndex}, &AppendEntriesReply{})
 						} else {
 							go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, rf.log[rf.nextIndex[i]:], rf.commitIndex}, &AppendEntriesReply{})
 						}
 					} else {
-						if rf.nextIndex[i] == 0 {
-							go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, nil, rf.commitIndex}, &AppendEntriesReply{})
-						} else {
-							go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, nil, rf.commitIndex}, &AppendEntriesReply{})
-						}
+						DPrintf("Server %d is sending heartbeats\n", rf.me)
+						// if rf.nextIndex[i] == 0 {
+						go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, nil, rf.commitIndex}, &AppendEntriesReply{})
+						// } else {
+							// go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, nil, rf.commitIndex}, &AppendEntriesReply{})
+						// }
 					}
 		
 				}
@@ -545,11 +558,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.isCandidate = false
 	rf.timeOut = false
 	rf.voteCount = 0
-	rf.commitIndex = 0
 	rf.applyCh = applyCh
 
-	rf.commitIndex = 0
-	rf.lastApplied = 0
+	rf.commitIndex = -1
+	rf.lastApplied = -1
 
 
 	

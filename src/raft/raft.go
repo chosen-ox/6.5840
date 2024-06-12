@@ -176,9 +176,9 @@ func (rf *Raft) updateStateMachine() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.commitIndex > rf.lastApplied {
-		// fmt.Println("Server ", rf.me, " is updating state machine from ", rf.lastApplied, " to ", rf.commitIndex)
-		// fmt.Println(rf.log)
-		// fmt.Println(rf.isLeader)
+		DPrintf("Server %d  is updating state machine from  %d  to %d", rf.me, rf.lastApplied, rf.commitIndex)
+		DPrintf("%v", rf.log)
+		DPrintf("%v", rf.isLeader)
 
 		tmp_log := make([]LogEntry, len(rf.log))
 		copy(tmp_log, rf.log)
@@ -197,7 +197,7 @@ func (rf *Raft) updateStateMachine() {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	DPrintf("Term: %d, Server %d received AppendEntries from %d\n", args.Term, rf.me, args.LeaderId)
+	DPrintf("Term: %d, Server %d received AppendEntries from %d\n server log: %v", args.Term, rf.me, args.LeaderId, rf.log)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
@@ -210,23 +210,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.isLeader = false
+		rf.timeOut = false
+
 
 
 
 		if args.PrevLogIndex == -1 {
 			reply.Success = true
-			rf.timeOut = false
 
-			if args.Entries == nil {
-				// fmt.Println("Server ", rf.me, "commitindex" , len(rf.log)-1, "leadercommit", args.LeaderCommit, "min", int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1))))
-				if args.LeaderCommit > rf.commitIndex {
-					rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
-					go rf.updateStateMachine()
-				}
-				return
-			}
+
 			rf.log = args.Entries
-
 
 			return
 		}
@@ -234,21 +227,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Success = false
 			return
 		}
-		rf.timeOut = false
 
 		reply.Success = true
-		if args.Entries == nil {
-			
-			return
+		if args.Entries != nil {
+			rf.log = rf.log[:args.PrevLogIndex+1]
+			rf.log = append(rf.log, args.Entries...)
 		}
-		rf.log = rf.log[:args.PrevLogIndex+1]
-		rf.log = append(rf.log, args.Entries...)
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+			go rf.updateStateMachine()
+		}
+		// if args.Entries == nil {
+		// 	// fmt.Println("Server ", rf.me, "commitindex" , len(rf.log)-1, "leadercommit", args.LeaderCommit, "min", int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1))))
+		// 	// if args.PrevLogTerm == 1{
+		// 		// if args.LeaderCommit > rf.commitIndex {
+		// 		// 	rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+		// 		// 	go rf.updateStateMachine()
+		// 		// }
+		// 	// }
+		// 	return
+		// }
+		
 
 	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("Term: %d, Server %d is sending AppendEntries to %d\n",rf.currentTerm, rf.me, server)
+	DPrintf("Term: %d, Server %d is sending AppendEntries to %d\n Server log: %v", rf.currentTerm, rf.me, server, rf.log)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
 
@@ -265,7 +270,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 			if args.Entries == nil {
 				return ok
 			}
-			DPrintf("Term: %d, Server %d received AppendEntries from %d\n", rf.currentTerm, rf.me, server)
+			// DPrintf("Term: %d, Server %d accepted AppendEntries from %d\n", rf.currentTerm, rf.me, server)
 			rf.nextIndex[server] = len(args.Entries) + args.PrevLogIndex + 1
 			rf.matchIndex[server] = rf.nextIndex[server] - 1
 		} else {
@@ -307,10 +312,14 @@ func (rf *Raft) MoreUpToDate(term1 int, index1 int, term2 int, index2 int) bool 
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	DPrintf("Term: %d, Server %d received RequestVote from %d\n", args.Term, rf.me, args.CandidateId)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term > rf.currentTerm && (len(rf.log) == 0 ||
+	DPrintf("Term: %d, Server %d received RequestVote from %d\n", args.Term, rf.me, args.CandidateId)
+	if len(rf.log) != 0 {
+		DPrintf("term1: %d, index1: %d, term2: %d, index2: %d\n", args.LastLogTerm, args.LastLogIndex, rf.log[len(rf.log)-1].Term, len(rf.log)-1)
+	}
+	//TODO not >= 
+	if args.Term >= rf.currentTerm && (len(rf.log) == 0 ||
 	rf.MoreUpToDate(args.LastLogTerm, args.LastLogIndex, rf.log[len(rf.log)-1].Term, len(rf.log)-1)) {
 		DPrintf("Term:%d, Server %d voted for %d\n", args.Term, rf.me, args.CandidateId)
 		rf.currentTerm = args.Term
@@ -365,7 +374,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.isLeader = false
 		}
 		if reply.VoteGranted {
-			DPrintf("Term: %d, Server %d received vote from %d\n", rf.currentTerm, rf.me, server)
+			// DPrintf("Term: %d, Server %d received vote from %d\n", rf.currentTerm, rf.me, server)
 			rf.voteCount++
 			if rf.voteCount >= int(math.Floor(float64(len(rf.peers))/2)) + 1 {
 				rf.isLeader = true
@@ -409,10 +418,10 @@ func (rf *Raft) updateCommitIndex() {
 	presum := 0
 	for _, k := range keys {
 		presum += kv[k]
-		DPrintf("Server %d has %d matchIndex %d\n", rf.me, kv[k], k)
+		// DPrintf("Server %d has %d matchIndex %d\n", rf.me, kv[k], k)
 		// fmt.Println("Server", rf.me, "has", kv[k], "matchIndex", k)
 		if k > rf.commitIndex && presum>= int(math.Floor(float64(len(rf.peers))/2)) {
-			DPrintf("Server %d is updating commitIndex to %d\n", rf.me, k)
+			// DPrintf("Server %d is updating commitIndex to %d\n", rf.me, k)
 			rf.commitIndex = k
 			
 			break
@@ -520,11 +529,16 @@ func (rf *Raft) heartBeat() {
 							go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, rf.log[rf.nextIndex[i]:], rf.commitIndex}, &AppendEntriesReply{})
 						}
 					} else {
-						DPrintf("Server %d is sending heartbeats\n", rf.me)
-						// if rf.nextIndex[i] == 0 {
-						go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, nil, rf.commitIndex}, &AppendEntriesReply{})
+						DPrintf("Server %d is sending heartbeats to %d\n", rf.me, i)
+						// if rf.matchIndex[i] >= rf.commitIndex {
+							// tell client to update commitIndex
+							// go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, 1, nil, rf.commitIndex}, &AppendEntriesReply{})
 						// } else {
-							// go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, nil, rf.commitIndex}, &AppendEntriesReply{})
+							if rf.nextIndex[i] == 0 {
+								go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, -1, -1, nil, rf.commitIndex}, &AppendEntriesReply{})
+							} else {
+								go rf.sendAppendEntries(i, &AppendEntriesArgs{rf.currentTerm, rf.me, rf.nextIndex[i]-1, rf.log[rf.nextIndex[i]-1].Term, nil, rf.commitIndex}, &AppendEntriesReply{})
+							}
 						// }
 					}
 		
